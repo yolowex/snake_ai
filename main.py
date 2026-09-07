@@ -8,11 +8,9 @@ A polished Snake game built on top of `snake_engine.py`.
   and input handling.
 - Two control modes, switchable at any time with on-screen buttons:
     * Human Control  -- arrow keys / WASD
-    * Neural Network -- a small MLP that reads the engine's 11-value
-      state vector and picks an action. It ships with random,
-      untrained weights (so it plays badly / erratically) and is a
-      drop-in placeholder: call `agent.load_weights("weights.npz")`
-      once you've actually trained one (see NeuralNetworkAgent below).
+    * Neural Network -- a small MLP that reads the engine's 22-value
+      state vector and picks an action. Loads trained weights from
+      best_weights.npz when available.
 
 Run:
     pip install pygame-ce numpy
@@ -26,6 +24,13 @@ import os
 
 import numpy as np
 import pygame
+
+try:
+    import tkinter as tk
+    from tkinter import messagebox
+    HAS_TK = True
+except ImportError:
+    HAS_TK = False
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from snake_engine import (
@@ -109,23 +114,16 @@ def absolute_to_relative(current_dir: int, target_dir: int):
 
 
 # ---------------------------------------------------------------------------
-# Placeholder Neural Network agent
+# Neural Network agent (matches train_snake.py architecture)
 # ---------------------------------------------------------------------------
 
 class NeuralNetworkAgent:
     """
-    A tiny 2-layer MLP (11 -> hidden -> 3) that maps the engine's compact
-    state vector straight to an action. This ships with random weights,
-    so out of the box it plays randomly/badly -- it exists as the
-    architecture + wiring for a real agent.
-
-    To use a trained model: train something (e.g. a small DQN) against
-    SnakeGame/VecSnakeGame using the same 11-value state as input and the
-    3-way {straight, right, left} action space as output, save the
-    resulting weight matrices with np.savez, then call `load_weights()`.
+    2-layer MLP (22 -> 64 -> 3) with ReLU hidden activation.
+    Matches the architecture and weight layout produced by train_snake.py.
     """
 
-    def __init__(self, input_size: int = 11, hidden_size: int = 16,
+    def __init__(self, input_size: int = 22, hidden_size: int = 64,
                  output_size: int = 3, seed: int = 7):
         rng = np.random.default_rng(seed)
         self.W1 = rng.normal(0, 0.5, (input_size, hidden_size)).astype(np.float32)
@@ -135,15 +133,18 @@ class NeuralNetworkAgent:
         self.trained = False
 
     def act(self, state: np.ndarray) -> int:
-        h = np.tanh(state @ self.W1 + self.b1)
+        # ReLU to match the trained DQN
+        h = np.maximum(0.0, state @ self.W1 + self.b1)
         logits = h @ self.W2 + self.b2
         return int(np.argmax(logits))
 
     def load_weights(self, path: str):
         """Load trained weights from an .npz file with keys W1,b1,W2,b2."""
         data = np.load(path)
-        self.W1, self.b1 = data["W1"], data["b1"]
-        self.W2, self.b2 = data["W2"], data["b2"]
+        self.W1 = data["W1"].astype(np.float32)
+        self.b1 = data["b1"].astype(np.float32)
+        self.W2 = data["W2"].astype(np.float32)
+        self.b2 = data["b2"].astype(np.float32)
         self.trained = True
 
 
@@ -206,6 +207,19 @@ def draw_rounded_cell(surf, x, y, color, outline=None, radius=7, inset=1):
         pygame.draw.rect(surf, outline, rect, width=1, border_radius=radius)
 
 
+def show_alert(title: str, message: str):
+    """Show a system alert window reporting a load failure."""
+    if HAS_TK:
+        root = tk.Tk()
+        root.withdraw()
+        root.attributes("-topmost", True)
+        messagebox.showerror(title, message)
+        root.destroy()
+    else:
+        # Fallback if tkinter is unavailable
+        print(f"[ALERT] {title}: {message}")
+
+
 # ---------------------------------------------------------------------------
 # Main application
 # ---------------------------------------------------------------------------
@@ -217,7 +231,7 @@ class SnakeApp:
     def __init__(self):
         pygame.init()
         pygame.display.set_caption("Snake -- Human vs. Neural Network")
-        self.screen = pygame.display.set_mode((SCREEN_W, SCREEN_H),flags=pygame.RESIZABLE | pygame.SCALED)
+        self.screen = pygame.display.set_mode((SCREEN_W, SCREEN_H), flags=pygame.RESIZABLE | pygame.SCALED)
         self.clock = pygame.time.Clock()
 
         self.font_title = pygame.font.SysFont("arial", 30, bold=True)
@@ -234,7 +248,33 @@ class SnakeApp:
 
         cfg = SnakeConfig(width=GRID_W, height=GRID_H)
         self.game = SnakeGame(cfg)
-        self.agent = NeuralNetworkAgent()
+
+        # Match the architecture used by train_snake.py
+        self.agent = NeuralNetworkAgent(
+            input_size=22,
+            hidden_size=64,
+            output_size=3,
+        )
+
+        # Attempt to load the best trained weights
+        weights_path = "best_weights.npz"
+        try:
+            if not os.path.isfile(weights_path):
+                raise FileNotFoundError(f"File not found: {weights_path}")
+            self.agent.load_weights(weights_path)
+            # Quick sanity-check on shapes
+            if self.agent.W1.shape != (22, 64) or self.agent.W2.shape != (64, 3):
+                raise ValueError(
+                    f"Unexpected weight shapes: W1={self.agent.W1.shape}, W2={self.agent.W2.shape}"
+                )
+        except Exception as exc:
+            self.agent.trained = False
+            show_alert(
+                "Model Load Failed",
+                f"Could not load '{weights_path}'.\n\n"
+                f"Reason: {exc}\n\n"
+                "The AI will run with random untrained weights."
+            )
 
         self.mode = self.MODE_HUMAN
         self.paused = False
@@ -258,7 +298,13 @@ class SnakeApp:
         y = 190
         self.btn_human = Button((bx, y, w, 56), "Human Control", "Arrow keys / WASD")
         y += 66
-        self.btn_ai = Button((bx, y, w, 56), "Neural Network", "Untrained placeholder")
+
+        if self.agent.trained:
+            ai_sub = "Trained model loaded"
+        else:
+            ai_sub = "Please train first"
+
+        self.btn_ai = Button((bx, y, w, 56), "Neural Network", ai_sub)
         y += 78
         self.btn_restart = Button((bx, y, w, 44), "Restart")
         self.panel_x = panel_x
@@ -457,6 +503,10 @@ class SnakeApp:
                 "moves aren't learned yet. Train an",
                 "agent against SnakeGame/VecSnakeGame",
                 "and load its weights to replace this.",
+            ] if not self.agent.trained else [
+                "Loaded from best_weights.npz",
+                "22 -> 64 -> 3  (ReLU)",
+                "Action space: straight / right / left",
             ]
             ny = y2 + 50
             for line in note:

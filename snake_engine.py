@@ -197,41 +197,128 @@ class SnakeGame:
 
     def get_state(self) -> np.ndarray:
         """
-        Compact 11-value boolean feature vector (fast, MLP-friendly):
-        [danger_straight, danger_right, danger_left,
-         dir_up, dir_right, dir_down, dir_left,
-         food_up, food_down, food_left, food_right]
+        Compact 22-value feature vector.
+
+        Layout:
+        [0]  danger_straight
+        [1]  danger_right
+        [2]  danger_left
+
+        [3]  dir_up
+        [4]  dir_right
+        [5]  dir_down
+        [6]  dir_left
+
+        [7]  food_up
+        [8]  food_down
+        [9]  food_left
+        [10] food_right
+
+        [11] normalized distance to wall up
+        [12] normalized distance to wall right
+        [13] normalized distance to wall down
+        [14] normalized distance to wall left
+
+        [15] normalized food horizontal offset
+        [16] normalized food vertical offset
+
+        [17] normalized nearest-obstacle distance up
+        [18] normalized nearest-obstacle distance right
+        [19] normalized nearest-obstacle distance down
+        [20] normalized nearest-obstacle distance left
+
+        [21] normalized snake length
         """
         hx, hy = self.body[-1]
+        hx, hy = int(hx), int(hy)
         d = int(self.direction)
 
-        def blocked(dir_idx):
+        def blocked(dir_idx: int) -> bool:
             dx, dy = DIRS[dir_idx]
-            x, y = hx + dx, hy + dy
+            x = hx + int(dx)
+            y = hy + int(dy)
+
             if not (0 <= x < self.w and 0 <= y < self.h):
                 return True
+
             cell = self.grid[y, x]
             tail = self.body[0]
+
+            # The current tail is legal to enter because it moves away on
+            # a non-food move.
             if (x, y) == tail:
                 return False
+
             return cell == BODY or cell == HEAD
+
+        def wall_distance(dir_idx: int) -> float:
+            dx, dy = DIRS[dir_idx]
+
+            if dx == 0:
+                distance = hy if dy < 0 else self.h - 1 - hy
+                maximum = max(self.h - 1, 1)
+            else:
+                distance = hx if dx < 0 else self.w - 1 - hx
+                maximum = max(self.w - 1, 1)
+
+            return float(distance) / float(maximum)
+
+        def obstacle_distance(dir_idx: int) -> float:
+            dx, dy = DIRS[dir_idx]
+            x, y = hx, hy
+            maximum = max(self.w, self.h)
+
+            for distance in range(1, maximum + 1):
+                x += int(dx)
+                y += int(dy)
+
+                # A wall is treated as an obstacle.
+                if not (0 <= x < self.w and 0 <= y < self.h):
+                    return float(distance - 1) / float(maximum)
+
+                cell = self.grid[y, x]
+
+                if cell == BODY or cell == HEAD:
+                    return float(distance - 1) / float(maximum)
+
+            return 1.0
 
         straight_dir = d
         right_dir = (d + 1) % 4
         left_dir = (d - 1) % 4
 
-        state = np.zeros(11, dtype=np.float32)
-        state[0] = blocked(straight_dir)
-        state[1] = blocked(right_dir)
-        state[2] = blocked(left_dir)
-        state[3 + d] = 1.0  # one-hot current direction (indices 3..6)
+        state = np.zeros(22, dtype=np.float32)
 
+        # Existing danger features.
+        state[0] = float(blocked(straight_dir))
+        state[1] = float(blocked(right_dir))
+        state[2] = float(blocked(left_dir))
+
+        # Existing direction one-hot encoding.
+        state[3 + d] = 1.0
+
+        # Existing food-direction booleans plus normalized food offsets.
         if self.food is not None:
             fx, fy = self.food
-            state[7] = fy < hy   # food up
-            state[8] = fy > hy   # food down
-            state[9] = fx < hx   # food left
-            state[10] = fx > hx  # food right
+            fx, fy = int(fx), int(fy)
+
+            state[7] = float(fy < hy)
+            state[8] = float(fy > hy)
+            state[9] = float(fx < hx)
+            state[10] = float(fx > hx)
+
+            # Positive x means food is to the right.
+            # Positive y means food is below.
+            state[15] = (fx - hx) / float(max(self.w - 1, 1))
+            state[16] = (fy - hy) / float(max(self.h - 1, 1))
+
+        # Wall distances are ordered up, right, down, left.
+        for i, direction in enumerate((0, 1, 2, 3)):
+            state[11 + i] = wall_distance(direction)
+            state[17 + i] = obstacle_distance(direction)
+
+        # Maximum possible snake length is width * height.
+        state[21] = len(self.body) / float(self.w * self.h)
 
         return state
 
