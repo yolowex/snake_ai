@@ -132,7 +132,10 @@ class SnakeGame:
 
         hx, hy = self.body[-1]
         dx, dy = DIRS[self.direction]
-        nx, ny = hx + dx, hy + dy
+        # DIRS is an int8 array -- cast to plain Python ints so body
+        # coordinates never silently narrow to int8 (which overflows
+        # once a renderer multiplies them by a pixel-size constant).
+        nx, ny = int(hx) + int(dx), int(hy) + int(dy)
 
         terminated = False
         truncated = False
@@ -469,39 +472,3 @@ class VecSnakeGame:
     def get_obs(self) -> np.ndarray:
         """Full grid observation for every env: shape (B, H, W), uint8."""
         return self.grid.copy()
-
-
-# ---------------------------------------------------------------------------
-# Benchmark / demo
-# ---------------------------------------------------------------------------
-
-if __name__ == "__main__":
-    import time
-
-    print("Single-env engine benchmark")
-    game = SnakeGame(SnakeConfig(width=12, height=12))
-    n_steps = 200_000
-    t0 = time.perf_counter()
-    for _ in range(n_steps):
-        _, _, terminated, truncated, _ = game.step(np.random.randint(0, 3))
-        if terminated or truncated:
-            game.reset()
-    dt = time.perf_counter() - t0
-    print(f"  {n_steps} steps in {dt:.3f}s -> {n_steps/dt:,.0f} steps/sec\n")
-
-    print("Vectorized engine benchmark")
-    B = 2048
-    vec = VecSnakeGame(batch_size=B, width=12, height=12, seed=0)
-    n_iters = 500
-    t0 = time.perf_counter()
-    for _ in range(n_iters):
-        actions = np.random.randint(0, 3, size=B)
-        vec.step(actions)
-    dt = time.perf_counter() - t0
-    total_env_steps = n_iters * B
-    print(f"  {n_iters} batch-steps x {B} envs = {total_env_steps:,} env-steps in {dt:.3f}s")
-    print(f"  -> {total_env_steps/dt:,.0f} env-steps/sec\n")
-
-    print("Sample single-game render:")
-    game.reset(seed=42)
-    print(game.render())
