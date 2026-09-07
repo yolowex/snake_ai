@@ -217,7 +217,7 @@ class SnakeApp:
     def __init__(self):
         pygame.init()
         pygame.display.set_caption("Snake -- Human vs. Neural Network")
-        self.screen = pygame.display.set_mode((SCREEN_W, SCREEN_H))
+        self.screen = pygame.display.set_mode((SCREEN_W, SCREEN_H),flags=pygame.RESIZABLE | pygame.SCALED)
         self.clock = pygame.time.Clock()
 
         self.font_title = pygame.font.SysFont("arial", 30, bold=True)
